@@ -206,7 +206,7 @@ jobs:
               refs+=("ghcr.io/$NAME@sha256:${f##*/}")
             done
             docker buildx imagetools create \
-              --tag "ghcr.io/$NAME:${VERSION#v}$suffix" \
+              --tag "ghcr.io/$NAME:${VERSION}$suffix" \
               --tag "ghcr.io/$NAME:latest$suffix" \
               "${refs[@]}"
           done
