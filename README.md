@@ -78,7 +78,7 @@ The images are `latest` (CPU), `latest-cuda` (NVIDIA) and `latest-openvino` (Int
 | `MONWORKER_MONBOORU_URL` | | monbooru's address, to pair with |
 | `MONWORKER_NAME` | the host name | the name monbooru shows |
 | `MONWORKER_MODELS` | `./models` | the models directory |
-| `MONWORKER_PROVIDER` | `cpu` | `cpu`, `cuda`, `directml`, `openvino`, ... |
+| `MONWORKER_PROVIDER` | `cpu`; `cuda` and `openvino` in those images | `cpu`, `cuda`, `directml`, `openvino`, ... |
 | `MONWORKER_THREADS` | every core | threads the models may use |
 | `MONWORKER_PARALLEL` | 4 | images tagged at once |
 | `MONWORKER_LISTEN` | `0.0.0.0:8457` | address to listen on |
