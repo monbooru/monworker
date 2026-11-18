@@ -1,17 +1,30 @@
 name: Build
 
 on:
-  push:
-    tags: ['v*']
-  workflow_dispatch:
-
-permissions:
-  contents: read
+  workflow_call:
+    inputs:
+      image_tags:
+        description: The image tags, space-separated, without the variant suffix; empty pushes the images by digest only
+        required: false
+        type: string
+        default: ''
+      docker:
+        description: Build and push the images
+        required: false
+        type: boolean
+        default: true
+      binaries:
+        description: Build the archives
+        required: false
+        type: boolean
+        default: true
+      ref:
+        description: The commit the images are built from; empty builds the one the workflow runs on
+        required: false
+        type: string
+        default: ''
 
 jobs:
-  test:
-    uses: ./.github/workflows/test.yml
-
   pins:
     name: Read the pins
     runs-on: ubuntu-latest
@@ -21,6 +34,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
       - name: Build args
         id: pins
@@ -34,7 +48,7 @@ jobs:
 
   archives:
     name: Archive ${{ matrix.os }} ${{ matrix.arch }}
-    needs: test
+    if: inputs.binaries
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -50,6 +64,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       - name: Set up Go
@@ -84,14 +99,14 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: archive-${{ matrix.os }}-${{ matrix.arch }}
+          name: binaries-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/*
           if-no-files-found: error
 
   docker:
     name: Image ${{ matrix.variant }} ${{ matrix.arch }}
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: [test, pins]
+    if: inputs.docker
+    needs: pins
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -108,6 +123,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       - name: Lowercase image name
@@ -164,6 +180,7 @@ jobs:
 
   manifest:
     name: Tag ${{ matrix.variant }}
+    if: inputs.docker && inputs.image_tags != ''
     needs: docker
     runs-on: ubuntu-latest
     permissions:
@@ -200,41 +217,10 @@ jobs:
 
       - name: Tag
         working-directory: /tmp/digests
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
-          docker buildx imagetools create \
-            --tag "ghcr.io/${{ steps.img.outputs.NAME }}:latest${{ matrix.suffix }}" \
-            --tag "ghcr.io/${{ steps.img.outputs.NAME }}:${TAG#v}${{ matrix.suffix }}" \
+          tags=""
+          for t in ${{ inputs.image_tags }}; do
+            tags="$tags --tag ghcr.io/${{ steps.img.outputs.NAME }}:${t}${{ matrix.suffix }}"
+          done
+          docker buildx imagetools create $tags \
             $(printf 'ghcr.io/${{ steps.img.outputs.NAME }}@sha256:%s ' *)
-
-  release:
-    name: Release
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: [archives, manifest]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-
-      - name: Notes
-        run: awk '/^## /{if(found){exit} found=1; next} found' CHANGELOG.md > /tmp/notes.md
-
-      - name: Download every archive
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-        with:
-          path: dist
-          pattern: archive-*
-          merge-multiple: true
-
-      - name: Create the release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          body_path: /tmp/notes.md
-          files: dist/*
