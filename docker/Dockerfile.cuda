@@ -1,0 +1,62 @@
+# The runtime carries the CUDA and cuDNN libraries ONNX Runtime's CUDA
+# execution provider loads; the worker still runs on CPU.
+
+ARG CUDA_BASE
+
+FROM golang:1.27.4-bookworm AS build
+ARG VERSION=dev
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /monworker ./cmd/monworker
+
+FROM ${CUDA_BASE} AS cuda
+
+ARG ORT_VERSION
+ARG ORT_GPU_SHA256
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip && \
+    curl -fsSL "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.gpu.linux/${ORT_VERSION}/microsoft.ml.onnxruntime.gpu.linux.${ORT_VERSION}.nupkg" \
+      -o /tmp/ort.zip && \
+    echo "${ORT_GPU_SHA256}  /tmp/ort.zip" | sha256sum -c - && \
+    unzip -q /tmp/ort.zip -d /tmp/ort && \
+    mkdir -p /out/ort /out/cublas /out/cuda /out/cudnn /out/doc/onnxruntime && \
+    cp /tmp/ort/runtimes/linux-x64/native/libonnxruntime*.so /out/ort/ && \
+    cp /tmp/ort/LICENSE /tmp/ort/ThirdPartyNotices.txt /out/doc/onnxruntime/ && \
+    cd /usr/local/cuda/lib64 && \
+    cp -L libcublas.so.12 libcublasLt.so.12 /out/cublas/ && \
+    cp -L libcudart.so.12 libcufft.so.11 libcurand.so.10 libnvJitLink.so.12 libnvrtc.so.12 \
+          "libnvrtc-builtins.so.${CUDA_VERSION%.*}" /out/cuda/ && \
+    cp -L /usr/lib/x86_64-linux-gnu/libcudnn*.so.9 /out/cudnn/
+
+FROM ubuntu:22.04
+
+COPY --from=cuda /out/cudnn/ /usr/lib/
+COPY --from=cuda /out/cublas/ /usr/lib/
+COPY --from=cuda /out/cuda/ /usr/lib/
+COPY --from=cuda /out/ort/ /usr/lib/
+COPY --from=cuda /out/doc/ /usr/share/doc/
+COPY --from=build /monworker /usr/local/bin/monworker
+
+RUN apt-get update && apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && \
+    ldconfig && \
+    groupadd --gid 1000 monworker && \
+    useradd --uid 1000 --gid 1000 --home-dir /home/monworker --create-home monworker
+USER 1000:1000
+
+ENV NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64 \
+    MONWORKER_LISTEN=0.0.0.0:8457 \
+    MONWORKER_MODELS=/models \
+    MONWORKER_CONFIG=/config/monworker.toml \
+    MONWORKER_PROVIDER=cuda
+
+EXPOSE 8457
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["/usr/local/bin/monworker", "healthcheck"]
+
+ENTRYPOINT ["/usr/local/bin/monworker"]

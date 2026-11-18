@@ -1,0 +1,15 @@
+version: "2"
+
+formatters:
+  enable:
+    - gofmt
+
+linters:
+  exclusions:
+    presets:
+      - std-error-handling
+      - common-false-positives
+    rules:
+      - path: internal/shared/
+        linters:
+          - unused

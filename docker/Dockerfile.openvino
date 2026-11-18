@@ -1,0 +1,46 @@
+ARG OPENVINO_BASE
+
+FROM golang:1.27.4-bookworm AS build
+ARG VERSION=dev
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /monworker ./cmd/monworker
+
+FROM ${OPENVINO_BASE}
+USER root
+COPY --from=build /monworker /usr/local/bin/monworker
+
+# Upstream ships no OpenVINO tarball, so the PyPI wheel is the only
+# prebuilt source. Link the whole capi directory, not just
+# libonnxruntime.so: the provider library pulls in the wheel's bundled
+# OpenVINO by soname.
+ARG ORT_OPENVINO_VERSION
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/* && \
+    pip install --no-cache-dir -U pip && \
+    pip install --no-cache-dir --no-deps onnxruntime-openvino==${ORT_OPENVINO_VERSION} && \
+    PKG_DIR=$(python3 -c "import onnxruntime, os; print(os.path.dirname(onnxruntime.__file__))") && \
+    find "$PKG_DIR" -name "*.so*" -type f -exec ln -sf {} /usr/local/lib/ \; && \
+    ORT_FILE=$(find "$PKG_DIR" -name "libonnxruntime.so.*" | head -1) && \
+    ln -sf "$ORT_FILE" /usr/local/lib/libonnxruntime.so && \
+    ldconfig
+
+# uid 1000 is the base image's own openvino user, homed at /home/openvino;
+# HOME below moves it, so the directory has to exist and be owned first.
+RUN mkdir -p /home/monworker && chown 1000:1000 /home/monworker
+
+USER 1000:1000
+
+ENV HOME=/home/monworker \
+    MONWORKER_LISTEN=0.0.0.0:8457 \
+    MONWORKER_MODELS=/models \
+    MONWORKER_CONFIG=/config/monworker.toml \
+    MONWORKER_PROVIDER=openvino
+
+EXPOSE 8457
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["/usr/local/bin/monworker", "healthcheck"]
+
+ENTRYPOINT ["/usr/local/bin/monworker"]

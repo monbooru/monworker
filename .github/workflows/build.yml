@@ -1,0 +1,240 @@
+name: Build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  pins:
+    name: Read the pins
+    runs-on: ubuntu-latest
+    outputs:
+      args: ${{ steps.pins.outputs.ARGS }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Build args
+        id: pins
+        run: |
+          {
+            echo 'ARGS<<EOF'
+            grep -E '^[A-Z_0-9]+=' packaging/pins.env
+            echo "VERSION=$(tr -d '[:space:]' < VERSION.md)"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+  archives:
+    name: Archive ${{ matrix.os }} ${{ matrix.arch }}
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: linux, arch: amd64, runner: ubuntu-latest}
+          - {os: linux, arch: arm64, runner: ubuntu-24.04-arm}
+          - {os: windows, arch: amd64, runner: ubuntu-latest}
+    env:
+      GOOS: ${{ matrix.os }}
+      GOARCH: ${{ matrix.arch }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+
+      - name: Install the Windows cross toolchain
+        if: matrix.os == 'windows'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64-win32 unzip zip
+
+      - name: Fetch the runtime
+        run: |
+          set -a
+          . ./packaging/pins.env
+          set +a
+          ./packaging/fetch-tools.sh
+
+      - name: Build
+        env:
+          CC: ${{ matrix.os == 'windows' && 'x86_64-w64-mingw32-gcc-win32' || 'gcc' }}
+        run: ./packaging/build-archives.sh
+
+      - name: Smoke
+        if: matrix.os == 'linux'
+        run: |
+          dir=$(ls -d stage/monworker_*)
+          "$dir/monworker" -version
+
+      - name: Upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: archive-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  docker:
+    name: Image ${{ matrix.variant }} ${{ matrix.arch }}
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [test, pins]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {variant: cpu, dockerfile: docker/Dockerfile, arch: amd64, runner: ubuntu-latest}
+          - {variant: cpu, dockerfile: docker/Dockerfile, arch: arm64, runner: ubuntu-24.04-arm}
+          - {variant: cuda, dockerfile: docker/Dockerfile.cuda, arch: amd64, runner: ubuntu-latest}
+          - {variant: openvino, dockerfile: docker/Dockerfile.openvino, arch: amd64, runner: ubuntu-latest}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Lowercase image name
+        id: img
+        run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+
+      - name: Build ${{ matrix.variant }} ${{ matrix.arch }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/${{ matrix.arch }}
+          build-args: ${{ needs.pins.outputs.args }}
+          load: ${{ matrix.variant != 'cuda' }}
+          tags: smoke-test
+
+      - name: Smoke test
+        if: matrix.variant != 'cuda'
+        run: docker run --rm smoke-test -version
+
+      - name: Login to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push ${{ matrix.variant }} ${{ matrix.arch }}
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/${{ matrix.arch }}
+          build-args: ${{ needs.pins.outputs.args }}
+          outputs: type=image,name=ghcr.io/${{ steps.img.outputs.NAME }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: digests-${{ matrix.variant }}-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 7
+
+  manifest:
+    name: Tag ${{ matrix.variant }}
+    needs: docker
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {variant: cpu, suffix: ""}
+          - {variant: cuda, suffix: "-cuda"}
+          - {variant: openvino, suffix: "-openvino"}
+    steps:
+      - name: Lowercase image name
+        id: img
+        run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Download digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          path: /tmp/digests
+          pattern: digests-${{ matrix.variant }}-*
+          merge-multiple: true
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+
+      - name: Login to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag
+        working-directory: /tmp/digests
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          docker buildx imagetools create \
+            --tag "ghcr.io/${{ steps.img.outputs.NAME }}:latest${{ matrix.suffix }}" \
+            --tag "ghcr.io/${{ steps.img.outputs.NAME }}:${TAG#v}${{ matrix.suffix }}" \
+            $(printf 'ghcr.io/${{ steps.img.outputs.NAME }}@sha256:%s ' *)
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [archives, manifest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Notes
+        run: awk '/^## /{if(found){exit} found=1; next} found' CHANGELOG.md > /tmp/notes.md
+
+      - name: Download every archive
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          path: dist
+          pattern: archive-*
+          merge-multiple: true
+
+      - name: Create the release
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: /tmp/notes.md
+          files: dist/*
