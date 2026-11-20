@@ -147,3 +147,39 @@ func TestAReleaseLeavesACallInFlightAlone(t *testing.T) {
 		t.Error("a release dropped the connection of the call in flight")
 	}
 }
+
+func TestStatusWhileBusyAsksTheChild(t *testing.T) {
+	h := fakeHandler{started: make(chan struct{})}
+	c := &Child{cmd: &exec.Cmd{}, conn: served(t, h), Provider: "cpu"}
+	ctx, cancel := context.WithCancel(context.Background())
+	slow := make(chan error, 1)
+	go func() {
+		_, err := c.Run(ctx, RunRequest{Models: []string{"m"}})
+		slow <- err
+	}()
+	<-h.started
+	st := c.Status()
+	cancel()
+	<-slow
+	if !st.InUse || !slices.Equal(st.Loaded, []string{"m"}) {
+		t.Errorf("status while busy: %+v, want in use with m loaded", st)
+	}
+}
+
+func TestStatusWhileBusyKeepsTheSnapshotWhenTheChildIsSilent(t *testing.T) {
+	front, child := net.Pipe()
+	t.Cleanup(func() { _ = front.Close(); _ = child.Close() })
+	go func() { _, _ = io.Copy(io.Discard, child) }()
+	c := &Child{cmd: &exec.Cmd{}, conn: NewConn(front)}
+	c.lastStatus.Store(&Status{Loaded: []string{"m"}, Provider: "cuda"})
+	c.inFlight.Add(1)
+	defer c.inFlight.Add(-1)
+	start := time.Now()
+	st := c.Status()
+	if !st.InUse || !slices.Equal(st.Loaded, []string{"m"}) || st.Provider != "cuda" {
+		t.Errorf("status of a silent child: %+v, want the snapshot in use", st)
+	}
+	if d := time.Since(start); d > 3*busyStatusTimeout {
+		t.Errorf("status waited %s on a silent child", d)
+	}
+}
