@@ -58,6 +58,9 @@ func run(cfg config.Config) error {
 	if missing := infer.MissingRuntimeLibrary(); missing != "" {
 		logx.Warnf("infer: %s", missing)
 	}
+	if err := os.MkdirAll(cfg.Models, 0o755); err != nil {
+		logx.Warnf("models: %v", err)
+	}
 	child := &ipc.Child{Provider: cfg.Provider, Args: []string{"child",
 		"--models", cfg.Models, "--cache", cfg.Cache, "--provider", cfg.Provider,
 		"--threads", strconv.Itoa(cfg.Threads), "--slots", strconv.Itoa(cfg.Parallel)}}
