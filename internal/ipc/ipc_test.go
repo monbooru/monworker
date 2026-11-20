@@ -152,10 +152,10 @@ func TestStatusWhileBusyAsksTheChild(t *testing.T) {
 	h := fakeHandler{started: make(chan struct{})}
 	c := &Child{cmd: &exec.Cmd{}, conn: served(t, h), Provider: "cpu"}
 	ctx, cancel := context.WithCancel(context.Background())
-	slow := make(chan error, 1)
+	slow := make(chan struct{})
 	go func() {
-		_, err := c.Run(ctx, RunRequest{Models: []string{"m"}})
-		slow <- err
+		_, _ = c.Run(ctx, RunRequest{Models: []string{"m"}})
+		close(slow)
 	}()
 	<-h.started
 	st := c.Status()
