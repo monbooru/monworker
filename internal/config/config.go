@@ -58,7 +58,7 @@ func Parse(argv []string, getenv func(string) string) (Config, error) {
 	fs.IntVar(&c.Parallel, "parallel", 4, "images tagged at once")
 	fs.StringVar(&c.Name, "name", "", "the worker's name in monbooru (default: the host name)")
 	fs.StringVar(&c.MonbooruURL, "monbooru", "", "monbooru's address, to pair with")
-	fs.IntVar(&c.IdleMinutes, "idle", 15, "minutes idle before the models are unloaded, 0 after every call")
+	fs.IntVar(&c.IdleMinutes, "idle", 15, "minutes idle before the models are unloaded, 0 is half a minute")
 	fs.StringVar(&c.LogLevel, "log", "info", "log level")
 	if err := fs.Parse(argv); err != nil {
 		return c, err
