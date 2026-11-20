@@ -64,4 +64,7 @@ func TestPairingsSurviveAReload(t *testing.T) {
 	if found, err := again.RemoveByPeerToken("2"); err != nil || !found || len(again.Pairings()) != 1 {
 		t.Errorf("remove: %v %v %+v", found, err, again.Pairings())
 	}
+	if err := again.Remove("http://a"); err != nil || len(again.Pairings()) != 0 {
+		t.Errorf("remove by url: %v %+v", err, again.Pairings())
+	}
 }

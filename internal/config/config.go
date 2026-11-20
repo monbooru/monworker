@@ -177,6 +177,12 @@ func (s *Store) Put(p Pairing) error {
 	})
 }
 
+func (s *Store) Remove(url string) error {
+	return s.update(func(d *fileDoc) {
+		d.Pairings = slices.DeleteFunc(d.Pairings, func(q Pairing) bool { return q.URL == url })
+	})
+}
+
 func (s *Store) RemoveByPeerToken(token string) (bool, error) {
 	found := false
 	err := s.update(func(d *fileDoc) {
