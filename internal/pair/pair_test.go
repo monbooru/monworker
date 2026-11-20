@@ -1,25 +1,31 @@
 package pair
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/monbooru/monworker/internal/config"
+	"github.com/monbooru/monworker/internal/shared/contract"
 	"github.com/monbooru/monworker/internal/shared/pairing"
 )
 
 type fakeMonbooru struct {
-	mu      sync.Mutex
-	offers  []pairing.RequestBody
-	answers []string
-	polls   int
+	mu       sync.Mutex
+	offers   []pairing.RequestBody
+	refusals []int
+	answers  []string
+	polls    int
 }
 
 func (f *fakeMonbooru) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -30,6 +36,11 @@ func (f *fakeMonbooru) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var body pairing.RequestBody
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.offers = append(f.offers, body)
+		if n := len(f.offers); n <= len(f.refusals) {
+			w.WriteHeader(f.refusals[n-1])
+			_ = json.NewEncoder(w).Encode(contract.Error{Error: "the name gpu-box is taken", Code: "invalid_request"})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(pairing.Accepted{RequestID: "r1", Status: pairing.Pending})
 	case "/api/v1/pair/status":
 		a := f.answers[min(f.polls, len(f.answers)-1)]
@@ -80,6 +91,28 @@ func TestADroppedRequestIsOfferedAgainAndADenialStops(t *testing.T) {
 	}
 	if len(store.Pairings()) != 0 {
 		t.Errorf("a denial was stored: %+v", store.Pairings())
+	}
+}
+
+func TestARefusedOfferStops(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+	f := &fakeMonbooru{refusals: []int{http.StatusBadRequest}, answers: []string{"approved"}}
+	store, base := runOffer(t, f)
+	if len(f.offers) != 1 || len(store.Pairings()) != 0 {
+		t.Errorf("offers = %d, pairings = %+v", len(f.offers), store.Pairings())
+	}
+	if want := "pair: " + base + " refused the offer: the name gpu-box is taken; restart the worker to offer again"; !strings.Contains(buf.String(), want) {
+		t.Errorf("log = %q, want %q", buf.String(), want)
+	}
+}
+
+func TestAnOfferMonbooruCannotTakeNowIsMadeAgain(t *testing.T) {
+	f := &fakeMonbooru{refusals: []int{http.StatusServiceUnavailable, http.StatusTooManyRequests, http.StatusNotFound}, answers: []string{"approved"}}
+	store, _ := runOffer(t, f)
+	if len(f.offers) != 4 || len(store.Pairings()) != 1 {
+		t.Errorf("offers = %d, pairings = %+v", len(f.offers), store.Pairings())
 	}
 }
 
