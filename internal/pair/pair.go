@@ -2,6 +2,7 @@ package pair
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -37,17 +38,19 @@ type Offer struct {
 
 var errDenied = errors.New("monbooru denied the pairing")
 
+// refusedError is monbooru's reason for a 4xx to the offer, which offering
+// again would only repeat.
+type refusedError string
+
+func (e refusedError) Error() string { return string(e) }
+
 // Run offers once per start until the operator answers, renewing an offer
 // monbooru dropped and retrying while monbooru is down; it returns when
-// the worker is paired, denied, or ctx ends. A worker already paired
-// with that monbooru offers nothing.
+// the worker is paired, denied, refused, or ctx ends. A worker already
+// paired with that monbooru offers again only once monbooru says it no
+// longer knows it.
 func (o Offer) Run(ctx context.Context) {
 	base := strings.TrimRight(o.Monbooru, "/")
-	for _, p := range o.Store.Pairings() {
-		if strings.TrimRight(p.URL, "/") == base {
-			return
-		}
-	}
 	poll, retry := o.Poll, o.Retry
 	if poll == 0 {
 		poll = 2 * time.Second
@@ -55,10 +58,24 @@ func (o Offer) Run(ctx context.Context) {
 	if retry == 0 {
 		retry = 5 * time.Second
 	}
+	for _, p := range o.Store.Pairings() {
+		if strings.TrimRight(p.URL, "/") != base {
+			continue
+		}
+		if o.known(ctx, base, p.Token, retry) {
+			return
+		}
+		logx.Infof("pair: %s no longer knows this worker; offering again", base)
+		if err := o.Store.Remove(p.URL); err != nil {
+			logx.Warnf("pair: forgetting %s: %v", base, err)
+			return
+		}
+	}
 	logx.Infof("pair: offering this worker to %s as %s", base, o.Name)
 	wait := retry
 	for {
 		err := o.offer(ctx, base, poll)
+		var refused refusedError
 		switch {
 		case err == nil:
 			logx.Infof("pair: paired with %s", base)
@@ -66,16 +83,55 @@ func (o Offer) Run(ctx context.Context) {
 		case errors.Is(err, errDenied):
 			logx.Warnf("pair: %s denied the pairing; restart the worker to offer again", base)
 			return
+		case errors.As(err, &refused):
+			logx.Warnf("pair: %s refused the offer: %s; restart the worker to offer again", base, refused)
+			return
 		case ctx.Err() != nil:
 			return
 		}
 		logx.Infof("pair: %v; trying again in %s", err, wait)
-		select {
-		case <-ctx.Done():
+		if !pause(ctx, wait) {
 			return
-		case <-time.After(wait):
 		}
 		wait = min(2*wait, time.Minute)
+	}
+}
+
+// known asks monbooru whether it still knows the worker by its token,
+// retrying while monbooru is down. Only a 401 is a no: a monbooru older
+// than the route answers 404, and the pairing stays.
+func (o Offer) known(ctx context.Context, base, token string, retry time.Duration) bool {
+	body, _ := json.Marshal(pairing.RequestBody{
+		App: contract.AppMonworker, Label: o.Name, URL: o.Self,
+		RequestedScopes: []string{}, Version: o.Version,
+	})
+	for wait := retry; ; wait = min(2*wait, time.Minute) {
+		status, _, err := call(ctx, http.MethodPost, base+"/api/v1/pair/check", token, body, nil)
+		switch {
+		case err == nil && status == http.StatusUnauthorized:
+			return false
+		case err == nil && status < 500:
+			logx.Infof("pair: paired with %s", base)
+			return true
+		case err == nil:
+			err = fmt.Errorf("monbooru answered the check with %d", status)
+		}
+		if ctx.Err() != nil {
+			return true
+		}
+		logx.Infof("pair: %v; trying again in %s", err, wait)
+		if !pause(ctx, wait) {
+			return true
+		}
+	}
+}
+
+func pause(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
 	}
 }
 
@@ -88,8 +144,10 @@ func (o Offer) offer(ctx context.Context, base string, poll time.Duration) error
 		RequestedScopes: []string{}, PeerToken: peerToken, Version: o.Version,
 	})
 	var accepted pairing.Accepted
-	if status, err := call(ctx, http.MethodPost, base+"/api/v1/pair/request", body, &accepted); err != nil {
+	if status, reason, err := call(ctx, http.MethodPost, base+"/api/v1/pair/request", "", body, &accepted); err != nil {
 		return err
+	} else if status >= 400 && status < 500 && status != http.StatusNotFound && status != http.StatusTooManyRequests {
+		return refusedError(reason)
 	} else if status != http.StatusOK || accepted.RequestID == "" {
 		return fmt.Errorf("monbooru answered the offer with %d", status)
 	}
@@ -100,7 +158,7 @@ func (o Offer) offer(ctx context.Context, base string, poll time.Duration) error
 		case <-time.After(poll):
 		}
 		var st pairing.StatusBody
-		status, err := call(ctx, http.MethodGet, base+"/api/v1/pair/status?id="+url.QueryEscape(accepted.RequestID), nil, &st)
+		status, _, err := call(ctx, http.MethodGet, base+"/api/v1/pair/status?id="+url.QueryEscape(accepted.RequestID), "", nil, &st)
 		if err != nil {
 			return err
 		}
@@ -117,21 +175,29 @@ func (o Offer) offer(ctx context.Context, base string, poll time.Duration) error
 	}
 }
 
-func call(ctx context.Context, method, u string, body []byte, out any) (int, error) {
+// call decodes a 200's body into out; any other status comes with
+// monbooru's error text, else the status line.
+func call(ctx context.Context, method, u, token string, body []byte, out any) (int, string, error) {
 	req, err := http.NewRequestWithContext(ctx, method, u, bytes.NewReader(body))
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusOK {
 		_ = json.NewDecoder(resp.Body).Decode(out)
+		return resp.StatusCode, "", nil
 	}
-	return resp.StatusCode, nil
+	var e contract.Error
+	_ = json.NewDecoder(resp.Body).Decode(&e)
+	return resp.StatusCode, cmp.Or(e.Error, resp.Status), nil
 }

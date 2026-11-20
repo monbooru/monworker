@@ -58,7 +58,7 @@ func Parse(argv []string, getenv func(string) string) (Config, error) {
 	fs.IntVar(&c.Parallel, "parallel", 4, "images tagged at once")
 	fs.StringVar(&c.Name, "name", "", "the worker's name in monbooru (default: the host name)")
 	fs.StringVar(&c.MonbooruURL, "monbooru", "", "monbooru's address, to pair with")
-	fs.IntVar(&c.IdleMinutes, "idle", 15, "minutes idle before the models are unloaded, 0 after every call")
+	fs.IntVar(&c.IdleMinutes, "idle", 15, "minutes idle before the models are unloaded, 0 is half a minute")
 	fs.StringVar(&c.LogLevel, "log", "info", "log level")
 	if err := fs.Parse(argv); err != nil {
 		return c, err
@@ -174,6 +174,12 @@ func (s *Store) Put(p Pairing) error {
 	return s.update(func(d *fileDoc) {
 		d.Pairings = slices.DeleteFunc(d.Pairings, func(q Pairing) bool { return q.URL == p.URL })
 		d.Pairings = append(d.Pairings, p)
+	})
+}
+
+func (s *Store) Remove(url string) error {
+	return s.update(func(d *fileDoc) {
+		d.Pairings = slices.DeleteFunc(d.Pairings, func(q Pairing) bool { return q.URL == url })
 	})
 }
 

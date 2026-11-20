@@ -210,16 +210,16 @@ func (c *Child) drop(conn *Conn) {
 	}
 }
 
-// Status answers from the last snapshot while a call is in flight rather
-// than ask the busy child; a child not running reports nothing loaded.
+// A busy child answers between two frames, but not while it loads a
+// model, which can take longer than a caller of /v1/info waits.
+const busyStatusTimeout = time.Second
+
+// Status asks the child, a busy one alongside its calls; one that does not
+// answer in time is given its last snapshot. A child not running reports
+// nothing loaded.
 func (c *Child) Status() Status {
 	if c.inFlight.Load() > 0 {
-		if cached := c.lastStatus.Load(); cached != nil {
-			snap := *cached
-			snap.InUse = true
-			return snap
-		}
-		return Status{InUse: true, Provider: cmp.Or(c.Provider, "cpu")}
+		return c.busyStatus()
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -232,6 +232,30 @@ func (c *Child) Status() Status {
 	}
 	snap := *resp.Status
 	c.lastStatus.Store(&snap)
+	return snap
+}
+
+// busyStatus takes no lock it would wait for: a start or a stop waiting on
+// the calls in flight would hold it up as long as they run.
+func (c *Child) busyStatus() Status {
+	snap := Status{Provider: cmp.Or(c.Provider, "cpu")}
+	if cached := c.lastStatus.Load(); cached != nil {
+		snap = *cached
+	}
+	if c.mu.TryRLock() {
+		if c.conn != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), busyStatusTimeout)
+			resp, err := c.conn.Call(ctx, Request{Method: MethodStatus})
+			cancel()
+			if err == nil && resp.Status != nil {
+				fresh := *resp.Status
+				c.lastStatus.Store(&fresh)
+				snap = fresh
+			}
+		}
+		c.mu.RUnlock()
+	}
+	snap.InUse = true
 	return snap
 }
 

@@ -39,18 +39,24 @@ func sharedLibPath() string {
 	return name
 }
 
+// MissingRuntimeLibrary says what is wrong with the library sharedLibPath
+// found, "" when it is there. Only an ORT_LIB_PATH that is not there is
+// sure to fail: a bare name still goes to the system's loader.
 func MissingRuntimeLibrary() string {
 	path := sharedLibPath()
 	if _, err := os.Stat(path); err == nil {
 		return ""
 	}
-	reason := "missing " + filepath.Base(path)
-	// A bare name means nothing was found anywhere.
-	if path == filepath.Base(path) {
-		if dir := desktop.ExeDir(); dir != "" {
-			return reason + " (expected in " + dir + ")"
-		}
-		return reason
+	name := filepath.Base(path)
+	if path != name {
+		return "missing " + name + " at " + path + "; no model will run"
 	}
-	return reason + " at " + path
+	beside := "beside the executable"
+	if dir := desktop.ExeDir(); dir != "" {
+		beside += " (" + dir + ")"
+	}
+	if runtime.GOOS == "windows" {
+		return name + " is neither " + beside + " nor in the working directory; the DLL search order is tried at the first call"
+	}
+	return name + " is neither " + beside + " nor in /usr/lib or /usr/local/lib; the system's library path is tried at the first call"
 }
