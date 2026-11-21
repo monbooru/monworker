@@ -218,3 +218,26 @@ func TestReadTagRefusesAPNGThatIsNotTheFrameNamed(t *testing.T) {
 		t.Errorf("a well-formed frame was refused: %v", err)
 	}
 }
+
+func TestClientSendsTheWorkersTokenBesideAGatewaysKey(t *testing.T) {
+	var auth, own string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth, own = r.Header.Get("Authorization"), BearerToken(r)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, Token: "worker-token"}
+	if _, err := c.Info(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if auth != "Bearer worker-token" || own != "worker-token" {
+		t.Errorf("without a gateway: Authorization %q, token read %q", auth, own)
+	}
+	c.Gateway = "gateway-key"
+	if _, err := c.Info(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if auth != "Bearer gateway-key" || own != "worker-token" {
+		t.Errorf("behind a gateway: Authorization %q, token read %q", auth, own)
+	}
+}

@@ -17,6 +17,9 @@ import (
 type Client struct {
 	BaseURL string
 	Token   string
+	// Gateway, when set, is the key of a gateway in front of the worker:
+	// it goes as the bearer and Token moves to HeaderToken.
+	Gateway string
 	// Format is the frame format of a tag call; empty is FormatRGB8.
 	Format string
 	HTTP   *http.Client
@@ -111,7 +114,11 @@ func (c *Client) getJSON(ctx context.Context, path, etag string, out any) (int, 
 }
 
 func (c *Client) do(req *http.Request, out any) (int, error) {
-	if c.Token != "" {
+	switch {
+	case c.Gateway != "":
+		req.Header.Set("Authorization", "Bearer "+c.Gateway)
+		req.Header.Set(HeaderToken, c.Token)
+	case c.Token != "":
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
 	req.Header.Set("Accept", "application/json")

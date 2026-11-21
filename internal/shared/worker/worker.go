@@ -18,6 +18,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"strings"
 )
 
 const (
@@ -43,6 +44,10 @@ const (
 	// on arrival.
 	FormatRGB8 = "rgb8"
 	FormatPNG  = "png"
+
+	// HeaderToken carries the worker's token when a gateway in front of
+	// it keeps Authorization for its own key.
+	HeaderToken = "X-Monworker-Token"
 )
 
 // ScoreFloor is the lowest score a worker sends: aggregation counts
@@ -283,6 +288,16 @@ func decodePNG(r io.Reader, dst []byte, size int) error {
 		return errors.New("a frame that is not 8-bit RGB")
 	}
 	return nil
+}
+
+// BearerToken is the worker's token a call carries: HeaderToken when a
+// gateway took Authorization, else the bearer.
+func BearerToken(r *http.Request) string {
+	if tok := strings.TrimSpace(r.Header.Get(HeaderToken)); tok != "" {
+		return tok
+	}
+	tok, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return strings.TrimSpace(tok)
 }
 
 // WriteTag writes a tag call's body; it returns the content type.
