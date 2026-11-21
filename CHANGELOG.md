@@ -1,5 +1,10 @@
 # Changelog
 
+## [v1.0.3] - 2026-11-21
+### Added
+- Frames can come as PNG, smaller than raw pixels on a slow link, with the same scores.
+- The token can come in `X-Monworker-Token`, for a worker behind a gateway that keeps `Authorization` for its own key.
+
 ## [v1.0.2] - 2026-11-20
 ### Fixed
 - monbooru's Stats shows the models a worker has loaded during its first job after a start, instead of `not loaded`.
