@@ -81,6 +81,7 @@ The images are `latest` (CPU), `latest-cuda` (NVIDIA) and `latest-openvino` (Int
 | `MONWORKER_PROVIDER` | `cpu`; `cuda` and `openvino` in those images | `cpu`, `cuda`, `directml`, `openvino`, ... |
 | `MONWORKER_THREADS` | every core | threads the models may use |
 | `MONWORKER_PARALLEL` | 4 | images tagged at once |
+| `MONWORKER_IDLE_MINUTES` | 15 | minutes unused before the models are unloaded and the memory, VRAM included, is given back; 0 is half a minute |
 | `MONWORKER_LISTEN` | `0.0.0.0:8457` | address to listen on |
 
 
