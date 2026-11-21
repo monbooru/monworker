@@ -184,6 +184,19 @@ func TestTagTakesPNGFramesAsTheSamePixels(t *testing.T) {
 	}
 }
 
+func TestAGatewaysKeyLeavesTheTokenToItsHeader(t *testing.T) {
+	c, _ := newWorker(t, &fakeBackend{})
+	behind := &worker.Client{BaseURL: c.BaseURL, Token: "paired", Gateway: "the-gateway-key"}
+	if _, err := behind.Info(context.Background()); err != nil {
+		t.Errorf("the worker's token in its header, a gateway key as the bearer: %v", err)
+	}
+	var se *worker.StatusError
+	wrong := &worker.Client{BaseURL: c.BaseURL, Token: "nope", Gateway: "paired"}
+	if _, err := wrong.Info(context.Background()); !errors.As(err, &se) || se.Status != http.StatusUnauthorized {
+		t.Errorf("a wrong token in the header beside a bearer that would open: %v", err)
+	}
+}
+
 func TestQueueLetsAnInteractiveCallPassTheBatch(t *testing.T) {
 	q := newQueue(1)
 	ctx := context.Background()

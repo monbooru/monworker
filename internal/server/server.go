@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -66,10 +65,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	logx.Debugf("%s %s %s", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
 }
 
-func bearer(r *http.Request) string {
-	tok, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	return strings.TrimSpace(tok)
-}
+func bearer(r *http.Request) string { return worker.BearerToken(r) }
 
 // allowed is the run's secret or a token a paired monbooru calls with.
 func (s *Server) allowed(tok string) bool {
