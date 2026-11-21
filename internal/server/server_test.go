@@ -1,12 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -160,6 +162,25 @@ func TestTagAnswersPerModelAndFrame(t *testing.T) {
 	}
 	if _, err := c.Tag(context.Background(), worker.TagRequest{Models: []string{"nope"}, Frames: worker.FrameSpec{Size: 8}}, frames(1)); !errors.As(err, &se) || se.Code != worker.CodeNotReady {
 		t.Errorf("a model the worker lacks: %v", err)
+	}
+}
+
+func TestTagTakesPNGFramesAsTheSamePixels(t *testing.T) {
+	b := &fakeBackend{}
+	c, _ := newWorker(t, b)
+	info, err := c.Info(context.Background())
+	if err != nil || !slices.Contains(info.Formats, worker.FormatPNG) || !slices.Contains(info.Formats, worker.FormatRGB8) {
+		t.Fatalf("formats = %v, %v", info.Formats, err)
+	}
+	sent := frames(2)
+	for _, format := range []string{worker.FormatRGB8, worker.FormatPNG} {
+		c.Format = format
+		if _, err := c.Tag(context.Background(), worker.TagRequest{Models: []string{"wd"}, Frames: worker.FrameSpec{Size: 8}}, sent); err != nil {
+			t.Fatalf("%s: %v", format, err)
+		}
+	}
+	if len(b.calls) != 2 || !slices.EqualFunc(b.calls[0].Frames, b.calls[1].Frames, bytes.Equal) || !slices.EqualFunc(b.calls[1].Frames, sent, bytes.Equal) {
+		t.Errorf("the backend did not get the same pixels raw and as PNG")
 	}
 }
 

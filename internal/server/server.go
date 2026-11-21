@@ -119,6 +119,7 @@ func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
 		Slots:     s.cfg.Parallel,
 		ModelsDir: absDir(s.cfg.Models),
 		Tasks:     []string{worker.TaskTag},
+		Formats:   []string{worker.FormatRGB8, worker.FormatPNG},
 		Loaded:    nonNil(st.Loaded),
 		Busy:      st.InUse || s.queue.busy(),
 	})
